@@ -3,142 +3,111 @@ name: claude-code-runner
 description: 快速调用 Claude Code 执行编程任务。支持一键运行、进度监控、结果获取。用于代码生成、项目构建、PR 审查、重构等任务。触发词：claude code、cc、让 claude 写、让 claude 做。
 metadata:
   author: greatmark
-  version: "1.0"
+  version: "2.0"
   requires:
     bins: ["claude"]
 ---
 
-# Claude Code Runner
+# Claude Code Runner v2.0 — 零轮询模式
 
-快速调用 Claude Code 的 OpenClaw 技能。
+## 🔥 核心原则：零轮询，Hook 回调
+
+**永远不要轮询 Claude Code！** 用 dispatch + Stop Hook 模式：
+1. OpenClaw 派发任务（一次 exec）
+2. Claude Code 后台独立运行
+3. 完成后 Stop Hook 自动写 latest.json + wake OpenClaw
+4. OpenClaw 读结果、推飞书
+
+Token 消耗：从暴涨 → 几乎忽略不计。
 
 ## 快速使用
 
-### 1. 一键执行任务
+### 方式一：dispatch 脚本（推荐）
 
 ```bash
-# 基础模式（需要确认）
-claude "你的任务描述"
+# 基础任务
+exec command:"bash ~/.openclaw/workspace/scripts/claude-dispatch/dispatch-claude.sh \
+  -p '实现一个 Python 爬虫' \
+  -n 'my-scraper' \
+  -w /path/to/project"
 
-# 全自动模式（sandbox 内自动确认）
-claude --dangerously-auto-accept-permissions "你的任务描述"
-
-# YOLO 模式（无 sandbox，无确认，最快最危险）
-claude --dangerously-auto-accept-permissions --no-sandbox "你的任务描述"
+# Agent Teams 多智能体协作
+exec command:"bash ~/.openclaw/workspace/scripts/claude-dispatch/dispatch-claude.sh \
+  -p '重构整个项目的测试框架' \
+  -n 'test-refactor' \
+  -w /path/to/project \
+  --agent-teams"
 ```
 
-### 2. 在后台运行（推荐）
+dispatch 后立即返回，不阻塞。Claude Code 完成后 Hook 自动 wake OpenClaw。
+
+### 方式二：直接 exec（简单任务）
 
 ```bash
-# 后台启动，返回 sessionId
-exec background:true workdir:/path/to/project command:"claude --dangerously-auto-accept-permissions '任务描述'"
-
-# 查看进度
-process action:log sessionId:xxx
-
-# 检查是否完成
-process action:poll sessionId:xxx
+# 后台启动，输出重定向
+exec background:true workdir:/path/to/project \
+  command:"claude --permission-mode bypassPermissions -p '任务描述' > /tmp/cc-output.txt 2>&1"
 ```
 
-### 3. 指定工作目录
+注意：这种方式需要手动 poll，不推荐长任务。
+
+## Hook 架构
+
+```
+dispatch-claude.sh
+  │
+  ├─ 写入 task-meta.json（任务名、时间戳）
+  ├─ nohup 启动 Claude Code（后台运行）
+  │   └─ 输出写入 task-output.txt
+  │
+  └─ Claude Code 完成 → Stop Hook 自动触发
+      │
+      ├─ notify-openclaw.sh 执行：
+      │   ├─ 读取 task-meta.json + 输出
+      │   ├─ 写入 latest.json（完整结果）
+      │   └─ curl wake API → OpenClaw 秒级响应
+      │
+      └─ OpenClaw 读取 latest.json → 推飞书
+```
+
+## 文件位置
+
+| 文件 | 路径 | 作用 |
+|------|------|------|
+| dispatch 脚本 | `~/.openclaw/workspace/scripts/claude-dispatch/dispatch-claude.sh` | 一键派发 |
+| Hook 脚本 | `~/.openclaw/workspace/scripts/claude-dispatch/notify-openclaw.sh` | Stop 回调 |
+| 任务元数据 | `~/.openclaw/workspace/data/claude-code-results/task-meta.json` | 任务信息 |
+| 任务输出 | `~/.openclaw/workspace/data/claude-code-results/task-output.txt` | 完整输出 |
+| 结果 JSON | `~/.openclaw/workspace/data/claude-code-results/latest.json` | Hook 写入 |
+
+## dispatch 参数
+
+| 参数 | 说明 |
+|------|------|
+| `-p, --prompt` | 任务提示（必需）|
+| `-n, --name` | 任务名称（用于跟踪）|
+| `-w, --workdir` | 工作目录 |
+| `--agent-teams` | 启用 Agent Teams 多智能体 |
+| `--permission-mode` | 权限模式（默认 bypassPermissions）|
+| `--model` | 指定模型 |
+
+## 处理 Wake Event
+
+当收到 wake event（"Claude Code 任务 [xxx] 已完成"），执行：
 
 ```bash
-# 在特定项目目录执行
-exec workdir:~/Projects/my-project command:"claude '在这个项目里添加登录功能'"
+# 读取结果
+cat ~/.openclaw/workspace/data/claude-code-results/latest.json
+
+# 读取详细输出
+cat ~/.openclaw/workspace/data/claude-code-results/task-output.txt
 ```
 
-## 常用场景
-
-### 代码生成
-```bash
-claude "写一个 Python 脚本，读取 CSV 文件并生成统计报告"
-```
-
-### 项目构建
-```bash
-claude --dangerously-auto-accept-permissions "创建一个 React + TypeScript 项目，包含用户登录功能"
-```
-
-### Bug 修复
-```bash
-claude "修复 src/utils.py 中的空指针异常"
-```
-
-### 代码审查
-```bash
-claude "Review 这个项目的代码质量，给出改进建议"
-```
-
-### PR 审查
-```bash
-claude "Review PR #123，分析代码变更并给出评审意见"
-```
-
-## 高级用法
-
-### 并行执行多个任务
-```bash
-# 同时启动多个 Claude Code 实例
-exec background:true workdir:~/project1 command:"claude '任务1'"
-exec background:true workdir:~/project2 command:"claude '任务2'"
-
-# 查看所有运行中的任务
-process action:list
-```
-
-### 交互式会话（需要 tmux）
-```bash
-# 创建 tmux 会话
-tmux new-session -d -s claude-session
-
-# 在 tmux 中启动 Claude Code
-tmux send-keys -t claude-session "cd ~/project && claude" Enter
-
-# 发送任务
-tmux send-keys -t claude-session "帮我重构这个模块" Enter
-
-# 查看输出
-tmux capture-pane -t claude-session -p
-```
+然后将结果摘要推送到飞书。
 
 ## 注意事项
 
-1. **工作目录很重要** - 始终指定正确的 workdir，避免 Claude Code 读取无关文件
-2. **不要在 ~/clawd 目录运行** - 这是 OpenClaw 的工作目录，会干扰
-3. **后台模式更安全** - 可以随时查看进度和终止
-4. **YOLO 模式谨慎使用** - 它会直接执行命令，没有任何确认
-
-## 模式对比
-
-| 模式 | 命令 | 安全性 | 速度 | 适用场景 |
-|------|------|--------|------|----------|
-| 普通 | `claude "..."` | ✅ 高 | 慢 | 敏感操作 |
-| 全自动 | `claude --dangerously-auto-accept-permissions "..."` | ⚠️ 中 | 快 | 日常开发 |
-| YOLO | `claude --dangerously-auto-accept-permissions --no-sandbox "..."` | ❌ 低 | 最快 | 信任的环境 |
-
-## 检查 Claude Code 是否可用
-
-```bash
-which claude && claude --version
-```
-
-## 常见问题
-
-### Q: Claude Code 没响应？
-```bash
-# 检查进程状态
-process action:poll sessionId:xxx
-
-# 查看最近输出
-process action:log sessionId:xxx limit:50
-```
-
-### Q: 如何终止任务？
-```bash
-process action:kill sessionId:xxx
-```
-
-### Q: 如何查看所有运行中的任务？
-```bash
-process action:list
-```
+1. **不要在 ~/.openclaw/workspace 目录运行 Claude Code** — 会干扰
+2. **Stop Hook 有 30 秒去重** — 避免 Stop + SessionEnd 双触发
+3. **串行执行** — 不要并行跑多个 Claude Code（会 SIGKILL）
+4. **Agent Teams 需要 Opus 4.6** — 确保有模型访问权限
