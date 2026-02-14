@@ -111,3 +111,12 @@ cat ~/.openclaw/workspace/data/claude-code-results/task-output.txt
 2. **Stop Hook 有 30 秒去重** — 避免 Stop + SessionEnd 双触发
 3. **串行执行** — 不要并行跑多个 Claude Code（会 SIGKILL）
 4. **Agent Teams 需要 Opus 4.6** — 确保有模型访问权限
+
+## Deep Think 使用策略（马老板规则）
+
+1. **默认先用主流程解决**（本地工具 / 常规模型 / Claude Code）
+2. **只在“解决不了”或“硬核任务”时才启用 Deep Think**（复杂编程、深度系统控制、连续失败排障）
+3. **严禁在主会话切主模型**
+4. **Deep Think 必须通过子代理使用**，不要直接替换主模型
+5. **节流使用**：网页版 Deep Think 有每日限额（约 10-50 次/天），把它当重炮
+6. 若使用 Gemini WebAPI，优先走 OpenAI 兼容入口：`http://127.0.0.1:8000/v1`
